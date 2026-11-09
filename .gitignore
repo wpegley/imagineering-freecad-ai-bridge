@@ -1,0 +1,10 @@
+# Runtime state. The Bridge generates these per machine; they contain
+# local paths and should never be committed.
+AI_Agent_IO/
+*.ai_log/
+ai_ide_command.txt
+ai_context_summary.txt
+ai_config.json
+ai_forks.json
+__pycache__/
+*.pyc
