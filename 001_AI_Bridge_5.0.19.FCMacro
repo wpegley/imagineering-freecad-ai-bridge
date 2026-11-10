@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__Version__ = '5.0.18'
+__Version__ = '5.0.19'
 """
 FreeCAD AI Bridge - Industrial Grade Edition
 Author: Claude AI Assistant (Hardened by Security Audit) + Imagineer
@@ -508,7 +508,7 @@ NOTE: These are REFERENCE resources. AI should not create/modify library
 __Name__ = 'AI Bridge - Self-Learning & Self-Healing'
 __Comment__ = 'The AI Bridge: lets an external AI agent drive this FreeCAD session over a JSONL command channel, with a live activity view, learning store and local Ollama support'
 __Author__ = 'Claude AI Assistant'
-__Version__ = '5.0.18'
+__Version__ = '5.0.19'
 __Date__ = '2026-11-10'
 __License__ = 'MIT'
 __Web__ = ''
@@ -1144,7 +1144,7 @@ _self_healing = None
 
 class Config:
     """Production-ready configuration with safe defaults"""
-    VERSION = "5.0.18"  # SINGLE SOURCE OF TRUTH for the Bridge version
+    VERSION = "5.0.19"  # SINGLE SOURCE OF TRUTH for the Bridge version
     #                    user-facing string (TTS, GUI title, console banner)
     #                    derives from this. Bump ONLY here.
     #                    3.3.0: Imagineering GUI rebrand. Prev 3.2.0: self-learning
@@ -2914,9 +2914,30 @@ class IDEManager:
             'name': 'Zed',
             'cli': 'zed',
             'ai_name': 'Zed AI',
+            # v5.0.19: no flags. Zed is not a VS Code fork and rejects
+            # --reuse-window outright; its own reuse flag has been --reuse
+            # and --existing in different builds. A bare folder opens on
+            # every version.
+            'launch_args': [],
             'paths_win': [
                 os.path.expandvars(r'%LOCALAPPDATA%\Zed\zed.exe'),
                 os.path.expandvars(r'%PROGRAMFILES%\Zed\zed.exe'),
+            ]
+        },
+        'antigravity': {
+            # v5.0.19: Google Antigravity, a VS Code fork (its own --help
+            # lists -r/--reuse-window). Installed on the operator's machine
+            # and unknown to this table until now. Reads AGENTS.md.
+            # 'Antigravity IDE' is the current product (2.6.0, 2026-10);
+            # plain 'Antigravity' (2.0.x) is the older install.
+            'name': 'Antigravity',
+            'cli': 'antigravity-ide',
+            'cli_alt': ['antigravity'],
+            'ai_name': 'Antigravity Agent',
+            'paths_win': [
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\Antigravity IDE\bin\antigravity-ide.cmd'),
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\Antigravity IDE\Antigravity IDE.exe'),
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\Antigravity\Antigravity.exe'),
             ]
         },
         'claude-code': {
@@ -3157,7 +3178,7 @@ class IDEManager:
         # all. The preferred keys keep their established order; everything
         # else follows.
         preferred = ['ollama', 'vscode', 'devin', 'cursor', 'zed',
-                     'claude-code']
+                     'antigravity', 'claude-code']
         order = [k for k in preferred if k in every]
         order += [k for k in sorted(every) if k not in preferred]
 
@@ -3229,9 +3250,18 @@ class IDEManager:
         # (reads CLAUDE.md automatically from the working directory)
         if ide_key == 'claude-code':
             try:
+                # v5.0.19: the terminal STARTS in the workspace (cwd=) rather
+                # than being told to `cd /d "<ws>" && claude`. subprocess
+                # escaped those quotes as \" for cmd.exe, which does not read
+                # \" as an escape, so cd failed with "The filename, directory
+                # name, or volume label syntax is incorrect" and the && never
+                # ran claude -- while this returned True. `start` passes its
+                # working directory to the window it opens. The first quoted
+                # argument to start is the window title.
                 subprocess.Popen(
-                    ['cmd', '/c', 'start', 'cmd', '/k', f'cd /d "{ws}" && claude'],
-                    shell=True
+                    ['cmd', '/c', 'start', 'Claude Code', 'cmd', '/k',
+                     'claude'],
+                    cwd=ws
                 )
                 return True, (
                     "Claude Code launched in AI Bridge Workspace.\n"
@@ -3240,18 +3270,46 @@ class IDEManager:
             except Exception as e:
                 return False, f"Error launching Claude Code: {str(e)}"
 
-        # Open the FOLDER so the IDE reads .windsurfrules / .cursorrules / CLAUDE.md
-        # v3.5.0: --reuse-window is a VS Code family flag. An editor the
-        # operator added themselves may reject an unknown option and refuse
-        # to start, so a custom entry passes only the arguments it was given.
+        # Open the FOLDER so the IDE reads its rules file (AGENTS.md,
+        # .cursorrules, .windsurfrules, CLAUDE.md, copilot-instructions).
+        # v3.5.0: an editor the operator added themselves may reject an
+        # unknown option and refuse to start, so a custom entry passes only
+        # the arguments it was given.
+        # v5.0.19: built-ins carry their own 'launch_args' too. Every one got
+        # the VS Code family's --reuse-window, which Zed rejects ("unexpected
+        # argument") and then opens nothing.
         if ide.get('custom'):
             extra = list(ide.get('args') or [])
         else:
-            extra = ['--reuse-window']
+            extra = list(ide.get('launch_args', ['--reuse-window']))
         cmd = [ide['path']] + extra + [ws]
 
         try:
-            subprocess.Popen(cmd, shell=True)
+            import tempfile
+            import time as _t
+            errf = tempfile.TemporaryFile()
+            proc = subprocess.Popen(cmd, shell=True,
+                                    stdout=subprocess.DEVNULL, stderr=errf)
+            # v5.0.19: Popen returning only means a process STARTED. Zed
+            # printed its usage error and exited while this reported
+            # "launched". Editors hand off to a running instance and exit 0,
+            # or keep running; a non-zero exit inside this window is a
+            # launcher that refused, and the operator is told what it said.
+            deadline = _t.time() + 2.0
+            while _t.time() < deadline and proc.poll() is None:
+                _t.sleep(0.1)
+            rc = proc.poll()
+            if rc not in (None, 0):
+                try:
+                    errf.seek(0)
+                    said = errf.read().decode('utf-8', 'replace').strip()
+                except Exception:
+                    said = ''
+                return False, (
+                    f"{ide['name']} refused to start (exit code {rc}).\n"
+                    + (f"It said: {said[:400]}" if said else
+                       "It printed nothing.")
+                    + f"\n\nCommand: {' '.join(cmd)}")
             return True, (
                 f"{ide['name']} launched with AI Bridge Workspace.\n"
                 f"The AI assistant will auto-read the rules file and know how to control FreeCAD."
@@ -3372,14 +3430,31 @@ INPUT FILE:  {input_file}
 OUTPUT FILE: {output_file}
 STATUS FILE: {status_file}
 
-POWERSHELL COMMAND PATTERN:
+EASIEST: the helper in your workspace does the handshake for you
+   python send_to_freecad.py --status
+   python send_to_freecad.py "print(App.ActiveDocument)"
+
+DOING IT BY HAND - every command carries agent_id AND the context_hash
+from YOUR registration_ack. Leave either out and the reply is
+"registration_required" instead of a result.
+
+POWERSHELL COMMAND PATTERN (set $hash from your registration_ack first):
 $input_file = "{input_file}"
-$cmd = '{{"id":"' + (New-Guid) + '","timestamp":"' + (Get-Date -Format o) + '","command":"YOUR_PYTHON_COMMAND","description":"What it does"}}'
+$hash = "PASTE_CONTEXT_HASH_FROM_YOUR_ACK"
+$cmd = '{{"id":"' + (New-Guid) + '","agent_id":"YOUR_NAME","context_hash":"' + $hash + '","timestamp":"' + (Get-Date -Format o) + '","command":"YOUR_PYTHON_COMMAND","description":"What it does"}}'
 Add-Content -Path $input_file -Value $cmd -NoNewline; Add-Content -Path $input_file -Value "`n"
 
-BASH/TERMINAL COMMAND PATTERN:
+BASH/TERMINAL COMMAND PATTERN (set HASH from your registration_ack first):
 INPUT_FILE="{input_file}"
-echo '{{"id":"'$(uuidgen)'","timestamp":"'$(date -Iseconds)'","command":"YOUR_PYTHON_COMMAND","description":"What it does"}}' >> "$INPUT_FILE"
+HASH="PASTE_CONTEXT_HASH_FROM_YOUR_ACK"
+echo '{{"id":"'$(date +%s%N)'","agent_id":"YOUR_NAME","context_hash":"'$HASH'","timestamp":"'$(date -Iseconds)'","command":"YOUR_PYTHON_COMMAND","description":"What it does"}}' >> "$INPUT_FILE"
+
+The hash changes after commands that modify the document. When a reply
+is "registration_required", send "hello" again and use the NEW hash.
+
+PARAMETRIC MEMORY AND MULTICORE (Bridge 5.0.17+):
+   print(AIBridge.help())     lists memory_recall/start/note/checkpoint,
+                              inventory, capture (runs in a second process)
 
 WORKFLOW:
 1. Send ONE command at a time
@@ -7901,7 +7976,13 @@ def start_ai_monitoring():
         'last_error': None,
         'stopped_at': None,
         'freecad_version': f"{App.Version()[0]}.{App.Version()[1]}",
-        'ai_bridge_version': Config.VERSION
+        'ai_bridge_version': Config.VERSION,
+        # v5.0.19: monitoring is running, so say so. 5.0.17 reset this to
+        # 'starting' at setup and only the watchdog's RECOVERY path ever
+        # wrote 'ok', so a healthy Bridge read 'starting' all session.
+        'liveness': 'ok',
+        'stalled_seconds': 0,
+        'stuck_seconds': 0
     })
     
     # v3.4.7: arm the liveness clock before the first timer
