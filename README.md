@@ -96,7 +96,7 @@ on another machine still answers `memory_recall()`.
 
 ## Install
 
-Copy `001_AI_Bridge_5.0.18.FCMacro` into your FreeCAD macro directory
+Copy `001_AI_Bridge_5.0.19.FCMacro` into your FreeCAD macro directory
 and run it. The I/O directory is created under FreeCAD's own per-version
 app-data path; nothing is written outside it unless you point the
 Locations tab somewhere else.
@@ -146,6 +146,17 @@ thread until it finishes. The watchdog reports the freeze; it cannot
 stop it.
 
 ## Changes
+
+**5.0.19** — Editor launching. Zed was handed VS Code's `--reuse-window`,
+refused it, and opened nothing; Claude Code's terminal failed its `cd` on
+cmd.exe quoting and never started `claude`. Both were reported as
+"launched", because starting a process is not the editor opening — a
+launcher that exits with an error is now reported with what it said.
+Antigravity is now detected. The connection instructions written for an
+editor's AI left `agent_id` and `context_hash` off the command line it was
+told to copy, so following them exactly was rejected; they now carry both.
+Tested on this machine: VS Code, Cursor, Devin, Zed, Antigravity and
+Claude Code all open on the workspace.
 
 **5.0.18** — The first Part object an agent created could crash FreeCAD.
 The sandbox gave commands a 30-name allow-list of builtins, and the first
