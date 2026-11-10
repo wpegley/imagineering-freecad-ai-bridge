@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__Version__ = '5.0.16'
+__Version__ = '5.0.18'
 """
 FreeCAD AI Bridge - Industrial Grade Edition
 Author: Claude AI Assistant (Hardened by Security Audit) + Imagineer
@@ -508,8 +508,8 @@ NOTE: These are REFERENCE resources. AI should not create/modify library
 __Name__ = 'AI Bridge - Self-Learning & Self-Healing'
 __Comment__ = 'The AI Bridge: lets an external AI agent drive this FreeCAD session over a JSONL command channel, with a live activity view, learning store and local Ollama support'
 __Author__ = 'Claude AI Assistant'
-__Version__ = '5.0.16'
-__Date__ = '2026-11-08'
+__Version__ = '5.0.18'
+__Date__ = '2026-11-10'
 __License__ = 'MIT'
 __Web__ = ''
 __Wiki__ = ''
@@ -1144,7 +1144,7 @@ _self_healing = None
 
 class Config:
     """Production-ready configuration with safe defaults"""
-    VERSION = "5.0.16"  # SINGLE SOURCE OF TRUTH for the Bridge version
+    VERSION = "5.0.18"  # SINGLE SOURCE OF TRUTH for the Bridge version
     #                    user-facing string (TTS, GUI title, console banner)
     #                    derives from this. Bump ONLY here.
     #                    3.3.0: Imagineering GUI rebrand. Prev 3.2.0: self-learning
@@ -3977,6 +3977,29 @@ _paused = False
 _ai_watchdog_thread = None
 _watchdog_stop_event = threading.Event()
 
+
+def _dump_all_stacks(reason):
+    """v5.0.17: write every Python thread's stack to ai_stack_dump.txt.
+
+    The watchdog could say THAT the GUI thread froze but never WHERE, so
+    three freezes in one day (10:53, 17:55, 19:54 on 2026-11-10) left
+    nothing to diagnose but timestamps. faulthandler reads the frozen
+    thread's frame from this one without needing the GIL holder to
+    cooperate, so the frozen frame shows up even while the GUI is blocked.
+    Plain file I/O only: this runs on the watchdog thread. Never raises.
+    """
+    try:
+        import faulthandler
+        path = os.path.join(AI_IO_DIR, 'ai_stack_dump.txt')
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write("\n===== %s  %s =====\n"
+                     % (datetime.now().isoformat(), reason))
+            fh.flush()
+            faulthandler.dump_traceback(file=fh, all_threads=True)
+            fh.flush()
+    except BaseException:
+        pass
+
 # ============================================================
 
 # ============================================================
@@ -4228,44 +4251,29 @@ class SecureCommandExecutor:
             sys.stdout = capture_stdout
             sys.stderr = capture_stderr
             
-            # Restricted globals - with controlled import access
+            # Restricted globals - with controlled import access.
+            #
+            # v5.0.18: a DENY-list of builtins, not a 30-name allow-list.
+            # Whatever a command's frame carries as __builtins__ is also what
+            # FreeCAD runs a lazily-loaded GUI module's start-up code under,
+            # because that load happens INSIDE the command (the first
+            # Part::Feature pulls in PartGui). Under the allow-list that
+            # start-up code failed inside C++, which called abort(): FreeCAD's
+            # SIGABRT handler turned the first one into "InterruptedError:
+            # Break signal occurred" and the next killed the process
+            # (0xC0000409). A direct `import PartGui` under the same builtins
+            # hung the GUI thread at 0% CPU instead. Reproduced in fresh
+            # FreeCAD processes with no Bridge loaded, 2026-11-10: allow-list
+            # fails, deny-list passes, the stdout swap and eval->exec do not
+            # matter. The dangerous names stay out, and the command validator
+            # still blocks them as text, so this is the same boundary -- it
+            # just stops breaking FreeCAD's own import machinery.
             exec_globals = {
                 'App': App,
                 'Gui': Gui,
                 'FreeCAD': App,
                 'FreeCADGui': Gui,
-                '__builtins__': {
-                    'print': print,
-                    'len': len,
-                    'range': range,
-                    'str': str,
-                    'int': int,
-                    'float': float,
-                    'bool': bool,
-                    'list': list,
-                    'dict': dict,
-                    'tuple': tuple,
-                    'set': set,
-                    'min': min,
-                    'max': max,
-                    'sum': sum,
-                    'abs': abs,
-                    'round': round,
-                    'enumerate': enumerate,
-                    'zip': zip,
-                    'sorted': sorted,
-                    'reversed': reversed,
-                    'any': any,
-                    'all': all,
-                    'isinstance': isinstance,
-                    'hasattr': hasattr,
-                    'getattr': getattr,
-                    'type': type,
-                    'dir': dir,
-                    '__import__': __import__,  # Allow import (pre-validated by command validator)
-                    '__name__': '__main__',
-                    '__doc__': None
-                }
+                '__builtins__': _sandbox_builtins(),
             }
             
             # Import allowed modules safely
@@ -4298,7 +4306,12 @@ class SecureCommandExecutor:
                 exec_globals['math'] = math
             except ImportError:
                 pass
-            
+
+            # v5.0.17: the Bridge's own agent API -- parametric memory,
+            # inventory, capture and outsource as named verbs. The same
+            # object sits on App.AIBridge for run_macro files.
+            exec_globals['AIBridge'] = getattr(App, 'AIBridge', None)
+
             # Clear console monitor before execution
             _console_monitor.clear()
             
@@ -4339,15 +4352,50 @@ class SecureCommandExecutor:
                 
         except Exception as e:
             result['error'] = f"{type(e).__name__}: {str(e)}"
+            # v5.0.17: keep the traceback HERE, inside the except. The
+            # error log called traceback.format_exc() long after this block
+            # had closed, so every entry read "Traceback: NoneType: None" --
+            # including all three "Break signal occurred" failures, whose
+            # one useful fact is which line of the command raised.
+            result['traceback'] = traceback.format_exc()
             stderr_content = capture_stderr.getvalue()
             if stderr_content:
                 result['error'] += f"\n{stderr_content}"
-        
+
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
-        
+
         return result
+
+SANDBOX_DENIED_BUILTINS = frozenset((
+    # file and console I/O
+    'open', 'input',
+    # running code that the validator never saw
+    'eval', 'exec', 'compile', 'breakpoint',
+    # reaching or rewriting namespaces and objects
+    'globals', 'locals', 'vars', 'setattr', 'delattr',
+    # interactive helpers that block or exit the host
+    'help', 'exit', 'quit',
+    # raw memory views
+    'memoryview',
+))
+
+
+def _sandbox_builtins():
+    """Python's own builtins minus SANDBOX_DENIED_BUILTINS (v5.0.18).
+
+    A fresh dict per command, so nothing a command does to it can leak into
+    the next one. __import__ stays, as it always has: imports are policed by
+    the command validator, and without it no module could load at all.
+    """
+    import builtins as _bi
+    safe = dict((k, v) for k, v in vars(_bi).items()
+                if k not in SANDBOX_DENIED_BUILTINS)
+    safe['__name__'] = '__main__'
+    safe['__doc__'] = None
+    return safe
+
 
 # Global executor instance
 _executor = SecureCommandExecutor()
@@ -4998,7 +5046,12 @@ def log_error_with_context(error, command_id, command_text, additional_context=N
             f.write(f"Command ID: {command_id}\n")
             f.write(f"Command: {command_text}\n")
             f.write(f"Error: {str(error)}\n")
-            f.write(f"Traceback:\n{traceback.format_exc()}\n")
+            # v5.0.17: a traceback captured where the exception was caught
+            # wins; format_exc() here is only right when called inside an
+            # except, which most callers are not.
+            tb = (additional_context or {}).get('traceback') or \
+                traceback.format_exc()
+            f.write(f"Traceback:\n{tb}\n")
             f.write(f"System state:\n")
             stats = _state.get_stats()
             for key, value in stats.items():
@@ -5148,6 +5201,9 @@ def write_comprehensive_report_for_ai(result, command, command_id, agent_id=None
             "error_details": {
                 "error_type": error_text.split(':')[0] if ':' in error_text else 'Error',
                 "error_message": error_text,
+                # v5.0.17: the line that raised, so the agent does not have
+                # to guess which statement of a long command failed.
+                "traceback": result.get('traceback'),
                 "console_state": result.get('console_state', {}),
                 "console_warnings": result.get('freecad_warnings', []),
                 "console_errors": result.get('freecad_errors', []),
@@ -5837,7 +5893,8 @@ def process_ai_commands():
                                 command_id,
                                 command,
                                 {'security_blocked': result.get('security_blocked', False),
-                                 'timeout': result.get('timeout', False)}
+                                 'timeout': result.get('timeout', False),
+                                 'traceback': result.get('traceback')}
                             )
                             
                             # Print prominent error
@@ -7130,7 +7187,17 @@ def setup_ai_io_directory():
             'initialized': datetime.now().isoformat(),
             'monitoring_active': False,
             'freecad_version': f"{App.Version()[0]}.{App.Version()[1]}",
-            'ai_bridge_version': Config.VERSION
+            'ai_bridge_version': Config.VERSION,
+            # v5.0.17: update_status MERGES into the existing file, so keys
+            # written by a dead previous session (watchdog liveness, stall
+            # length, error state) otherwise survive a restart and contradict
+            # the fresh heartbeat. Seen live: a restarted 5.0.16 still read
+            # "liveness": "timers_dead" / "stalled_seconds": 21.1 from the
+            # run it had just replaced.
+            'liveness': 'starting',
+            'stalled_seconds': 0,
+            'error_state': False,
+            'last_error': None
         })
         
         return True
@@ -7182,10 +7249,32 @@ def generate_ai_context_summary():
             f.write("  App, Gui, FreeCAD, FreeCADGui, Part, Draft, Sketcher, Mesh, math\n")
             f.write("ALLOWED IMPORTS:\n")
             f.write("  datetime, PartDesign, Arch, TechDraw, Path, Spreadsheet\n")
-            f.write("BLOCKED: os, sys, subprocess, open(), eval(), exec()\n\n")
+            f.write("BLOCKED: os, sys, subprocess, open(), eval(), exec()\n")
+            f.write("AVAILABLE since v5.0.18: exception classes (except Exception: works),\n")
+            f.write("  repr, map, filter, iter, next, format, class definitions.\n\n")
             f.write("BEST PRACTICE: Send ONE large command with all objects rather than\n")
             f.write("many small commands that each need doc = App.ActiveDocument.\n\n")
             f.write("FULL RULES: " + os.path.join(tech_data_path, "AI_Bridge_Python_Rules.txt") + "\n\n")
+
+            # === AGENT API (v5.0.17) ===
+            f.write("="*70 + "\n")
+            f.write("AGENT API - PARAMETRIC MEMORY & MULTICORE (AIBridge / App.AIBridge)\n")
+            f.write("="*70 + "\n")
+            f.write("AIBridge is pre-loaded in the exec scope; run_macro files reach the\n")
+            f.write("same object as App.AIBridge. Named verbs, no code strings.\n\n")
+            f.write("MEMORY - a document's memory travels WITH it (log folder beside the\n")
+            f.write(".FCStd, embedded copy inside it):\n")
+            f.write("  AIBridge.memory_recall()      -> what this document already knows\n")
+            f.write("  AIBridge.memory_start()       -> begin logging (save the doc first)\n")
+            f.write("  AIBridge.memory_note('text')  -> record a decision in the log\n")
+            f.write("  AIBridge.memory_checkpoint()  -> flush + re-embed into the .FCStd\n")
+            f.write("  AIBridge.memory_stop()        -> embed and stop\n")
+            f.write("  AIBridge.inventory()          -> measured summary of the model\n\n")
+            f.write("MULTICORE - heavy work runs in a SECOND FreeCAD process:\n")
+            f.write("  job = AIBridge.capture()      -> whole+section images, headless worker\n")
+            f.write("  AIBridge.capture_status(job)  -> manifest when the worker is done\n")
+            f.write("  AIBridge.outsource()          -> mesh-tool targets; push/pull/launch\n\n")
+            f.write("Call print(AIBridge.help()) for the one-screen verb list.\n\n")
 
             # === KNOWLEDGE BASE REVIEW ===
             f.write("="*70 + "\n")
@@ -7604,6 +7693,8 @@ def _watchdog_loop():
                         'stuck_seconds': round(elapsed, 1)})
                 if elapsed >= warn_sec and not warned:
                     warned = True
+                    _dump_all_stacks("command has held the GUI thread %.0fs"
+                                     % elapsed)
                     stamp = datetime.now().isoformat()
                     msg = ("[WATCHDOG] A Bridge command has held the FreeCAD GUI "
                            "thread for %.0fs - the UI is likely frozen. Long ops "
@@ -7667,6 +7758,8 @@ def _watchdog_loop():
                     stalled = time.monotonic() - ref
                     if stalled >= dead_sec and not timers_reported:
                         timers_reported = True
+                        _dump_all_stacks("no command-poll tick for %.0fs"
+                                         % stalled)
                         stamp = datetime.now().isoformat()
                         msg = ("[WATCHDOG] No command-poll tick for %.0fs. "
                                "The GUI event loop or the poll callback is "
@@ -11133,8 +11226,10 @@ ProjectLog.install = _install_with_baseline
 # ----------------------------------------------------------------------------
 # An entry point for agents. The Rule 12 splash is a modal gate waiting for a
 # human click, so a tool whose purpose is letting an AI resume a project could
-# not be started by one. An agent sets the flag, then runs the macro, or calls
-# agent_start() directly over the Bridge.
+# not be started by one. Over the Bridge an agent calls these through the
+# published API: AIBridge.memory_start() / memory_stop() (see _AgentAPI
+# below, v5.0.17) -- these module names themselves are not visible from the
+# execute sandbox or a run_macro module.
 # ----------------------------------------------------------------------------
 NO_SPLASH_ATTR = "AI_PROJECT_LOG_NO_SPLASH"
 
@@ -11168,6 +11263,223 @@ def agent_stop(doc=None):
     log.stop()
     LOGS.pop(doc.Name, None)
     return size
+
+
+# ===========================================================================
+# AGENT API -- the Bridge's memory and multicore verbs, published where an
+# agent can actually reach them.
+# ---------------------------------------------------------------------------
+# Everything above (the project log, the document inventory, the capture
+# worker, the outsource registry) was unreachable from the command channel
+# until 5.0.17: the execute sandbox builds a fresh restricted namespace and
+# run_macro loads the file as a fresh module, so none of this macro's names
+# were visible to the agent the Bridge exists to serve. Verified live on
+# 5.0.16 -- every probe for agent_start, start_capture and the rest came
+# back NameError, while the GUI used them happily.
+#
+# The API is one object on the App module -- the single namespace every
+# route already shares: the execute sandbox pre-loads App (and gets the
+# object directly as AIBridge), and any run_macro file imports FreeCAD.
+# Named verbs with typed parameters only; nothing here takes a code string.
+# Errors raise with a plain reason, which the Bridge's own error_report
+# path carries back to the agent verbatim.
+# ===========================================================================
+class _AgentAPI(object):
+    """App.AIBridge -- parametric memory and multicore verbs for agents.
+
+    Memory verbs give a document a memory that travels WITH it (a log
+    folder beside the .FCStd and an embedded copy inside it); multicore
+    verbs do heavy work in a second process so this session never blocks.
+    Call help() for the one-screen list.
+    """
+
+    # -- parametric memory ---------------------------------------------------
+    def memory_start(self, doc=None):
+        """Begin logging DOC (default: the active document). The document
+        must be saved once. Returns the log folder path."""
+        log = agent_start(doc)
+        return log.writer.folder
+
+    def memory_stop(self, doc=None):
+        """Checkpoint, embed the log inside the .FCStd and stop logging.
+        Returns the embedded size in bytes (0 if nothing was running)."""
+        return agent_stop(doc)
+
+    def memory_state(self, doc=None):
+        """'enabled', 'paused' or 'off' for DOC (default: active)."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            return "off"
+        return read_state(doc)
+
+    def memory_note(self, text, doc=None, kind="agent"):
+        """Record one agent decision or observation in DOC's running log."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            raise ValueError("no active document")
+        log = LOGS.get(doc.Name)
+        if log is None:
+            raise ValueError("logging is not running on '%s'; call "
+                             "memory_start() first" % doc.Name)
+        log.entry(kind, str(text), fenced=False)
+        return "noted in %s" % os.path.basename(log.writer.folder)
+
+    def memory_checkpoint(self, doc=None, why="agent checkpoint"):
+        """Flush to disk, rewrite _RESUME.md and re-embed into the .FCStd
+        without stopping. Returns the embedded size in bytes."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            raise ValueError("no active document")
+        log = LOGS.get(doc.Name)
+        if log is None:
+            raise ValueError("logging is not running on '%s'" % doc.Name)
+        log.checkpoint(why)
+        return embed_log(log)
+
+    def memory_recall(self, doc=None):
+        """The memory DOC carries: the copy embedded inside the .FCStd when
+        there is one (it travels with the file), else the log beside the
+        file. Returns '' for a document with no memory at all."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            raise ValueError("no active document")
+        obj = log_object(doc)
+        if obj is not None:
+            path = getattr(obj, COPY_PROP, "") or ""
+            if path and os.path.isfile(path):
+                with open(path, encoding="utf-8") as fh:
+                    return fh.read()
+        try:
+            folder = log_dir_path(doc)
+        except ValueError:
+            return ""          # never saved -> nowhere a log could be
+        if not os.path.isdir(folder):
+            return ""
+        pieces = []
+        resume = os.path.join(folder, RESUME_NAME)
+        if os.path.isfile(resume):
+            with open(resume, encoding="utf-8") as fh:
+                pieces.append(fh.read())
+        for c in sorted(glob.glob(os.path.join(folder, "log_*.md"))):
+            with open(c, encoding="utf-8") as fh:
+                pieces.append(fh.read())
+        return "\n\n".join(pieces)
+
+    def inventory(self, doc=None, full=False):
+        """Measure DOC before touching it: extent, mass where a density is
+        stated, parametric knobs, health. full=True for the whole report."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            raise ValueError("no active document")
+        return inventory_markdown(doc) if full else inventory_summary(doc)
+
+    # -- multicore -----------------------------------------------------------
+    def capture(self, doc=None, out_dir="", preset="Medium", **kw):
+        """Photograph DOC -- whole view plus section slices -- in a SECOND
+        FreeCAD process, so this session never blocks. The document must be
+        saved. Returns the job folder; poll capture_status() on it. Extra
+        keywords pass through to start_capture (slices, axes, objects,
+        second_degree, fidelity, width, height)."""
+        doc = doc or App.ActiveDocument
+        if doc is None:
+            raise ValueError("no active document")
+        if not out_dir:
+            out_dir = os.path.join(AI_IO_DIR, "capture", "%s_%s" % (
+                doc.Name, time.strftime("%Y%m%d_%H%M%S")))
+        ok, msg, job = start_capture(doc, out_dir, preset=preset, **kw)
+        if not ok:
+            raise RuntimeError(msg)
+        return job
+
+    def capture_status(self, job_dir):
+        """The worker's manifest once it finishes (status, images, section
+        profiles), else {'status': 'running'}. Never blocks."""
+        man = os.path.join(job_dir, "capture_manifest.json")
+        if not os.path.isfile(man):
+            return {"status": "running", "job_dir": job_dir}
+        with open(man, encoding="utf-8-sig") as fh:
+            return json.load(fh)
+
+    # -- outsource (mesh tools in their own process) ---------------------------
+    def outsource(self, key=None):
+        """State of every outsource target, or of one by key."""
+        if key:
+            t = outsource_target(key)
+            if t is None:
+                raise ValueError("no outsource target '%s'" % key)
+            return outsource_state(t)
+        return [outsource_state(t) for t in OUTSOURCE_TARGETS]
+
+    def push(self, key, doc=None, objects=None):
+        """Export DOC's solids into the target's push folder. Returns the
+        exported file path."""
+        t = outsource_target(key)
+        if t is None:
+            raise ValueError("no outsource target '%s'" % key)
+        ok, msg, path = outsource_push(t, doc or App.ActiveDocument, objects)
+        if not ok:
+            raise RuntimeError(msg)
+        return path
+
+    def pull(self, key, doc=None):
+        """Import every NEW file from the target's pull folder into DOC.
+        Returns the list of imported names (may be empty)."""
+        t = outsource_target(key)
+        if t is None:
+            raise ValueError("no outsource target '%s'" % key)
+        ok, msg, names = outsource_pull(t, doc or App.ActiveDocument)
+        if not ok and not names:
+            raise RuntimeError(msg)
+        return names
+
+    def launch(self, key):
+        """Start (or find) the target's own server/app. Returns its URL or
+        the launcher's message when there is no URL."""
+        t = outsource_target(key)
+        if t is None:
+            raise ValueError("no outsource target '%s'" % key)
+        ok, msg, url = outsource_launch(t)
+        if not ok:
+            raise RuntimeError(msg)
+        return url or msg
+
+    def help(self):
+        """One screen: every verb and what it does."""
+        return (
+            "App.AIBridge -- agent verbs (also pre-loaded as AIBridge in "
+            "execute commands)\n"
+            "\n"
+            "PARAMETRIC MEMORY (travels with the document):\n"
+            "  memory_recall(doc=None)      what this document already knows\n"
+            "  memory_start(doc=None)       begin logging (doc must be saved)\n"
+            "  memory_note(text)            record a decision in the log\n"
+            "  memory_checkpoint()          flush + re-embed into the .FCStd\n"
+            "  memory_stop()                embed and stop\n"
+            "  memory_state()               'enabled', 'paused' or 'off'\n"
+            "  inventory(full=False)        measured summary of the model\n"
+            "\n"
+            "MULTICORE (a second process does the work; this GUI never "
+            "blocks):\n"
+            "  job = capture(preset='Medium', slices=12, axes=['x','y','z'])\n"
+            "  capture_status(job)          manifest when the worker is done\n"
+            "\n"
+            "OUTSOURCE (mesh tools in their own process):\n"
+            "  outsource()                  every target and its state\n"
+            "  push(key)  pull(key)  launch(key)\n")
+
+
+def _publish_agent_api():
+    """Put the API where every execution route can see it. Never raises:
+    a Bridge that cannot publish its API must still start."""
+    try:
+        api = _AgentAPI()
+        setattr(App, "AIBridge", api)
+        return api
+    except BaseException:
+        return None
+
+
+AGENT_API = _publish_agent_api()
 
 
 # ----------------------------------------------------------------------------
