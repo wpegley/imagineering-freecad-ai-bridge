@@ -73,9 +73,30 @@ that saves a dated copy into a `Forks` folder beside the document —
 `saveCopy`, so you stay in the file you were in. The agent is told when
 a backup is due, so raising it is its job rather than your memory.
 
+## The agent API
+
+Everything above is reachable by the agent, not just by the person at the
+panel. `AIBridge` is pre-loaded in every `execute` command; a `run_macro`
+file reaches the same object as `App.AIBridge`.
+
+```python
+AIBridge.memory_recall()        # what this document already knows
+AIBridge.memory_start()         # begin logging (save the document once first)
+AIBridge.memory_note('why')     # record a decision in the log
+AIBridge.memory_checkpoint()    # flush, and re-embed into the .FCStd
+AIBridge.memory_stop()          # embed and stop
+AIBridge.inventory()            # extent, volume, centroid, what is parametric
+job = AIBridge.capture()        # images and sections, in a SECOND process
+AIBridge.capture_status(job)    # the manifest once that process is done
+print(AIBridge.help())          # the full list
+```
+
+The memory is embedded in the `.FCStd` itself, so a document opened cold
+on another machine still answers `memory_recall()`.
+
 ## Install
 
-Copy `001_AI_Bridge_5.0.16.FCMacro` into your FreeCAD macro directory
+Copy `001_AI_Bridge_5.0.18.FCMacro` into your FreeCAD macro directory
 and run it. The I/O directory is created under FreeCAD's own per-version
 app-data path; nothing is written outside it unless you point the
 Locations tab somewhere else.
@@ -103,8 +124,9 @@ confirm you got a result; appending and walking away proves nothing.
 ## What it does not claim
 
 **The `execute` sandbox is a typo guard, not a security boundary.** It
-is a textual blacklist plus an AST import check, and it can be walked
-around. `run_macro` has no sandbox at all, by design. Treat this macro
+is a textual blacklist, an AST import check and a deny-list of builtins
+(`open`, `eval`, `exec`, `compile`, `globals`, `setattr` and a few more),
+and it can be walked around. `run_macro` has no sandbox at all, by design. Treat this macro
 as what it is: something that runs code you or your agent send, on your
 machine, under your eye. Do not expose it to anything you would not hand
 a shell to.
@@ -122,6 +144,26 @@ not yet fixed.
 **There is no command timeout.** A runaway `execute` holds the GUI
 thread until it finishes. The watchdog reports the freeze; it cannot
 stop it.
+
+## Changes
+
+**5.0.18** — The first Part object an agent created could crash FreeCAD.
+The sandbox gave commands a 30-name allow-list of builtins, and the first
+Part object loads PartGui *inside* the command, under those builtins. Its
+start-up code failed inside C++, and C++ aborted: `InterruptedError: Break
+signal occurred` the first time, a dead FreeCAD the next, or a silent
+0%-CPU freeze. The sandbox now removes a deny-list instead, which also
+gives agents exception classes, `repr`, `map` and `next`.
+
+**5.0.17** — The memory and multicore features existed but no agent could
+call them; they are now the `AIBridge` API above. Errors carry their real
+traceback (every one used to read `NoneType: None`). A frozen GUI thread
+now leaves its stack in `ai_stack_dump.txt`, so a freeze says where.
+A restart no longer inherits the last session's `timers_dead` status.
+
+Verified live on FreeCAD 26.3: Part object creation, the full memory
+cycle through close and reopen, the inventory figures, capture in a
+second process, and the Bridge's 32 self-tests.
 
 ## Credits
 
