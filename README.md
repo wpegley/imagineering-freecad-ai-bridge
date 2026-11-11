@@ -96,7 +96,7 @@ on another machine still answers `memory_recall()`.
 
 ## Install
 
-Copy `001_AI_Bridge_5.0.19.FCMacro` into your FreeCAD macro directory
+Copy `001_AI_Bridge_5.0.20.FCMacro` into your FreeCAD macro directory
 and run it. The I/O directory is created under FreeCAD's own per-version
 app-data path; nothing is written outside it unless you point the
 Locations tab somewhere else.
@@ -146,6 +146,10 @@ thread until it finishes. The watchdog reports the freeze; it cannot
 stop it.
 
 ## Changes
+
+**5.0.20** — Housekeeping for public release. The header now carries the
+real version and author, and the optional shared-wire import is marked
+as optional: without it the Bridge uses its built-in wire format.
 
 **5.0.19** — Editor launching. Zed was handed VS Code's `--reuse-window`,
 refused it, and opened nothing; Claude Code's terminal failed its `cd` on

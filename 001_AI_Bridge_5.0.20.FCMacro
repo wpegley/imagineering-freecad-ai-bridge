@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-__Version__ = '5.0.19'
+__Version__ = '5.0.20'
 """
 FreeCAD AI Bridge - Industrial Grade Edition
-Author: Claude AI Assistant (Hardened by Security Audit) + Imagineer
-Version: 3.4.6 - Imagineering Edition (Ollama / Local AI)
-Date: 2026-11-01
+Author: Imagineering (built with Claude Code)
+Version: 5.0.20 - Imagineering Edition (Ollama / Local AI)
+Date: 2026-11-11
 
 CHANGES IN v3.4.6 (2026-11-01) - ONE BAD COMMAND NO LONGER WEDGES THE BRIDGE:
 ======================================
@@ -507,9 +507,9 @@ NOTE: These are REFERENCE resources. AI should not create/modify library
 
 __Name__ = 'AI Bridge - Self-Learning & Self-Healing'
 __Comment__ = 'The AI Bridge: lets an external AI agent drive this FreeCAD session over a JSONL command channel, with a live activity view, learning store and local Ollama support'
-__Author__ = 'Claude AI Assistant'
-__Version__ = '5.0.19'
-__Date__ = '2026-11-10'
+__Author__ = 'Imagineering'
+__Version__ = '5.0.20'
+__Date__ = '2026-11-11'
 __License__ = 'MIT'
 __Web__ = ''
 __Wiki__ = ''
@@ -1144,7 +1144,7 @@ _self_healing = None
 
 class Config:
     """Production-ready configuration with safe defaults"""
-    VERSION = "5.0.19"  # SINGLE SOURCE OF TRUTH for the Bridge version
+    VERSION = "5.0.20"  # SINGLE SOURCE OF TRUTH for the Bridge version
     #                    user-facing string (TTS, GUI title, console banner)
     #                    derives from this. Bump ONLY here.
     #                    3.3.0: Imagineering GUI rebrand. Prev 3.2.0: self-learning
@@ -3605,6 +3605,8 @@ AI_INPUT_FILE = os.path.join(AI_IO_DIR, "ai_input_commands.jsonl")
 AI_OUTPUT_FILE = os.path.join(AI_IO_DIR, "ai_output_results.jsonl")
 
 # --- shared wire envelope (HQ/41_AI_Bridge/10_Core/wire.py) ---------------
+# OPTIONAL. Only the author's machine has this folder; everywhere else the
+# import is skipped and the Bridge runs on its built-in wire format.
 # SOFT import, deliberately unlike the other five bridges, which assert.
 # This macro is the operator's most-used tool and runs INSIDE FreeCAD: a hard
 # ImportError here would take FreeCAD's bridge down over a path problem. The
