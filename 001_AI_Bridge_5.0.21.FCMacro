@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-__Version__ = '5.0.20'
+__Version__ = '5.0.21'
 """
 FreeCAD AI Bridge - Industrial Grade Edition
 Author: Imagineering (built with Claude Code)
-Version: 5.0.20 - Imagineering Edition (Ollama / Local AI)
+Version: 5.0.21 - Imagineering Edition (Ollama / Local AI)
 Date: 2026-11-11
 
 CHANGES IN v3.4.6 (2026-11-01) - ONE BAD COMMAND NO LONGER WEDGES THE BRIDGE:
@@ -508,7 +508,7 @@ NOTE: These are REFERENCE resources. AI should not create/modify library
 __Name__ = 'AI Bridge - Self-Learning & Self-Healing'
 __Comment__ = 'The AI Bridge: lets an external AI agent drive this FreeCAD session over a JSONL command channel, with a live activity view, learning store and local Ollama support'
 __Author__ = 'Imagineering'
-__Version__ = '5.0.20'
+__Version__ = '5.0.21'
 __Date__ = '2026-11-11'
 __License__ = 'MIT'
 __Web__ = ''
@@ -1144,7 +1144,7 @@ _self_healing = None
 
 class Config:
     """Production-ready configuration with safe defaults"""
-    VERSION = "5.0.20"  # SINGLE SOURCE OF TRUTH for the Bridge version
+    VERSION = "5.0.21"  # SINGLE SOURCE OF TRUTH for the Bridge version
     #                    user-facing string (TTS, GUI title, console banner)
     #                    derives from this. Bump ONLY here.
     #                    3.3.0: Imagineering GUI rebrand. Prev 3.2.0: self-learning
@@ -9474,6 +9474,10 @@ class _Busy:
 # wrapper -- so the second went deaf to the console while still looking
 # healthy. One broker owns the hooks, installs them once, and routes each
 # message to a single log.
+# FreeCAD's own stdout/stderr redirector types. Temporary instances of these
+# (one per Macro > Execute run) must never be wrapped -- see verify().
+_FC_REDIRECTORS = ("OutputStdout", "OutputStderr",
+                   "PythonStdout", "PythonStderr")
 # ----------------------------------------------------------------------------
 class _HookBroker:
 
@@ -9500,6 +9504,11 @@ class _HookBroker:
         # What we actually put on App.Console, so uninstall can check that it
         # is still ours before handing the original back.
         self._installed_fns = {}
+        # Streams present at install (safe to re-wrap later) and the FreeCAD
+        # temporary redirectors verify() deliberately did not wrap.
+        self._install_real = {}
+        self._last_foreign = {}
+        self.foreign_left_alone = 0
 
     # -- membership ---------------------------------------------------------
     def subscribe(self, log):
@@ -9585,6 +9594,22 @@ class _HookBroker:
                     # Our own tee, re-made by an earlier verify(). Adopt it.
                     self._tee[attr] = cur
                     continue
+                # A FreeCAD redirector we did not find at install is a
+                # TEMPORARY one: Macro > Execute swaps in a fresh
+                # OutputStdout/OutputStderr for the length of one macro and
+                # frees it afterwards. A macro that opens a dialog spins the
+                # event loop, the panel's 800 ms poll lands here mid-macro,
+                # and wrapping that stream left a tee pointing at freed C++
+                # memory: "Access violation" on every poll from then on
+                # (FC 27.1, 2026-11-12, 163_Add_Conventional_Coordinates run
+                # with the Bridge connected). Leave it alone; FreeCAD puts
+                # our tee back itself when the macro ends.
+                if (type(cur).__name__ in _FC_REDIRECTORS
+                        and cur is not self._install_real.get(attr)):
+                    if id(cur) != self._last_foreign.get(attr):
+                        self._last_foreign[attr] = id(cur)
+                        self.foreign_left_alone += 1
+                    continue
                 tee = _HookBroker._Tee(self, label, cur)
                 self._tee[attr] = tee
                 setattr(sys, attr, tee)
@@ -9624,6 +9649,7 @@ class _HookBroker:
             self._installed_fns[name] = hooked
 
         self._orig_stdout, self._orig_stderr = sys.stdout, sys.stderr
+        self._install_real = {"stdout": sys.stdout, "stderr": sys.stderr}
         self._tee["stdout"] = _HookBroker._Tee(self, "stdout",
                                                self._orig_stdout)
         self._tee["stderr"] = _HookBroker._Tee(self, "stderr",
